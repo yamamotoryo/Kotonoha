@@ -18,8 +18,7 @@ import urllib.request
 import requests
 
 from bs4 import BeautifulSoup
-from anki import version
-from anki.hooks import addHook
+
 from aqt import mw
 from aqt.utils import showInfo, tooltip
 import csv
@@ -30,10 +29,8 @@ from anki.hooks import addHook
 from aqt import mw
 from aqt.qt import *
 from aqt.utils import showInfo, showWarning, tooltip
-from bs4 import BeautifulSoup
-from PyQt5.QtGui import QIcon
-from PyQt5.QtGui import QPixmap
-from PyQt5.QtWidgets import QApplication, QDialog
+
+from aqt.qt import QIcon, QPixmap, QApplication, QDialog
 
 from . import form, lang
 
@@ -170,7 +167,7 @@ class Kotonoha_dialog(QDialog):
         ##image_label.setScaledContents(True)
 
         # Center the image within the label
-        self.form.imglabel.setAlignment(Qt.AlignCenter)
+        self.form.imglabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         # set dictionaries from config
         self.dictionaries = self.config['Dictionaries']
@@ -223,14 +220,21 @@ class Kotonoha_dialog(QDialog):
 
         self.usage = None
 
-        if self.learners_api_key or self.elementary_api_key or self.medical_api_key or self.collegiate_api_key:
+        def check_key(key):
+            if key=='' or key=='YOUR_KEY_HERE':
+                return False
+            else:
+                return True
+
+        if check_key(self.learners_api_key) or check_key(self.elementary_api_key) \
+                or check_key(self.medical_api_key) or check_key(self.collegiate_api_key):
             try:
                 self.form.MerriamKeyBox.hide()
                 self.adjustSize()
             except Exception as e:
                 pass
 
-        if self.deepl_api_key:
+        if check_key(self.deepl_api_key):
             try:
                 self.form.apiKeyBox.hide()
                 self.adjustSize()
@@ -554,6 +558,17 @@ class Kotonoha_dialog(QDialog):
                                      JapField=JapIndex
                                      )
 
+                elif self.mode == 'GPT':
+                    if self.editor:
+                        editor = self.editor
+                    else:
+                        editor = self.browser.editor
+                    GPT_to_Anki(editor, note,
+                                     sourceField=sourceIndex,
+                                     openweb=self.config["Open Web Browser"],
+                                     searchWord=self.config["Additional Search Word"],
+                                     DefField=DefIndex
+                                     )
 
 
                 if self.editor:
@@ -1165,19 +1180,22 @@ def get_pokemon(editor, note, sourceField=0, overwrite=False,
     insert_queue = {}
 
     word = _get_word_b(editor=editor, note=note, sourceField=sourceField)
+    word = re.sub('Name:', '', word)
     word = re.sub('Name', '', word)
-    word = re.sub(':', '', word)
+
     # word = re.sub("\'", '', word) # Farfetch'd
     word = re.sub("\"", '', word).strip()
     poke_name = word
     ref_name = word.lower()
-    ref_name = re.sub(". ", '-', ref_name)
+    ref_name = re.sub("\. ", '-', ref_name)
     if ref_name == "":
         tooltip("Kotonoha: No text found in note fields.")
         return
 
     # change the quiz to cloze sentence
     cloze_note=note[fields[0]]
+    cloze_note=cloze_note.replace('{{c1::','')
+    cloze_note = cloze_note.replace('}}', '')
     repl = '{{c1::' + poke_name + '}}'
     cloze_note=cloze_note.replace(poke_name, repl)
     _add_to_insert_queue(insert_queue=insert_queue,
@@ -1220,6 +1238,10 @@ def get_pokemon(editor, note, sourceField=0, overwrite=False,
               '</div>'
     new_note.append(type_html)
     # IPA
+    if 'Type: Null' in poke_name:
+        ipa_name='Type/ Null'
+    else:
+        ipa_name = poke_name
     IPA_html = '<div class ="poke_box" >' + \
                 '<span class ="box-title">' + 'IPA' + '</span>' + \
                 '<p>' + row[4] + '[sound:' + poke_name + '.mp3]</p>' + \
@@ -1240,15 +1262,24 @@ def get_pokemon(editor, note, sourceField=0, overwrite=False,
     rows = text.split('<br>')
     for row in rows:
         if 'Possible moves' in row:
-            sp=row.split(': ')
-            moves_html = '<div class ="poke_box" >' + \
-                       '<span class ="box-title">' + 'Possible moves' + '</span>' + \
-                       '<p>' + sp[1] +'</p>' + \
-                       '</div>'
+            if 'poke_box' in row:
+                sp = row.split('Possible moves</span><p>')
+                moves_html = '<div class ="poke_box" >' + \
+                             '<span class ="box-title">' + 'Possible moves' + '</span>' + \
+                             '<p>' + clean_html(sp[1]) + '</p>' + \
+                             '</div>'
+            else:
+                sp=row.split(': ')
+                moves_html = '<div class ="poke_box" >' + \
+                           '<span class ="box-title">' + 'Possible moves' + '</span>' + \
+                           '<p>' + sp[1] +'</p>' + \
+                           '</div>'
             new_note.append(moves_html)
 
     ref_name=ref_name.replace("♀","-f")
     ref_name=ref_name.replace("♂","-m")
+    if 'tapu ' in ref_name:
+        ref_name=ref_name.replace(' ','-')
     response = requests.get('https://pokemondb.net/pokedex/' + urllib.parse.quote_plus(ref_name))
     soup = BeautifulSoup(response.text, 'html.parser')
     # insert name origin
@@ -1296,7 +1327,7 @@ def get_pokemon(editor, note, sourceField=0, overwrite=False,
                                  to_print=poke_img,
                                  field_index=ImgField)
         else:
-            tooltip("The img URL is not valid.")
+            tooltip("The img URL for (%s) is not valid." % (ref_name))
 
 
 
@@ -1308,7 +1339,46 @@ def get_pokemon(editor, note, sourceField=0, overwrite=False,
         for field_index in insert_queue.keys():
             insert_into_field(editor, insert_queue[field_index], field_index, overwrite=True)
 
+def GPT_to_Anki(editor, note, sourceField=0, overwrite=False,
+                     openweb=False, searchWord='',
+                     DefField=1,ImgField=2,JapField=1,
+                     from_editor=False):
 
+    fields = list(note.keys())
+    if from_editor:
+        config = mw.addonManager.getConfig(__name__)
+        overwrite = config["Overwrite"]
+        openweb = config["Open Web Browser"]
+        searchWord = config["Additional Search Word"]
+        fields.append('Off')
+        sourceField = fields.index(config['Fields']['Source Field'])
+        DefField = config['Fields']['Definition Field']
+        if DefField=='Off':
+            DefField = -1
+        else:
+            DefField = fields.index(DefField)
+
+    insert_queue = {}
+
+    new_note = []
+
+    source_note = note[fields[sourceField]]
+    new_note.append(colon2box(source_note))
+
+    for x in new_note:
+        _add_to_insert_queue(insert_queue=insert_queue,
+                             to_print=x,
+                             field_index=DefField)
+
+
+
+    for queue_key in insert_queue.keys():
+        note[fields[queue_key]] = insert_queue[queue_key]
+
+    if from_editor:
+        # Insert each queue into the considered field
+        for field_index in insert_queue.keys():
+            insert_into_field(editor, insert_queue[field_index], field_index, overwrite=True)
 
 def is_valid_url(url):
     try:
@@ -1388,3 +1458,21 @@ def _abbreviate_fl(fl):
     if fl in FL_ABBREVIATION.keys():
         fl = FL_ABBREVIATION[fl]
     return fl
+
+def colon2box(text):
+    # Split the text into lines
+    lines = text.split('<br>')
+
+    # Initialize an empty list to hold the matches
+    new_text = []
+
+    # Go through each line to find the sequence of characters before the colon
+    for line in lines:
+        split_line = line.split(': ')
+        html = '<div class ="gpt_box" >' + \
+               '<span class ="box-title">' + split_line[0] + '</span>' + \
+               '<p>' + split_line[1] + '</p>' + \
+               '</div>'
+        new_text.append(html)
+    new_text = ''.join(new_text)
+    return new_text
